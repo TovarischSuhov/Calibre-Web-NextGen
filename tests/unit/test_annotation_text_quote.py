@@ -492,3 +492,36 @@ def test_a_kobo_highlight_whose_words_do_not_start_in_its_span_gives_no_words(ko
         [_kobo_row(span, "Down the Rabbit-Hole")], [wire], kobo_book.book)
 
     assert "text_quote" not in wire
+
+
+def test_a_kobo_highlight_reaches_koreader_framing_its_words(kobo_book):
+    span = kobo_book.span["kobo.8.1"]
+    row = _kobo_row(span, "Alice’s Adventures in Wonderland")
+    wire = {}
+
+    annotation_routes._add_device_xpointers([row], [wire], kobo_book.book, "EPUB")
+
+    # What the KOReader plugin checks before drawing: the words between the
+    # XPointers, in the file it holds, are the words the Kobo highlighted.
+    assert kx.passage_between(kobo_book.epub, wire["start_xpointer"], wire["end_xpointer"]) \
+        == "Alice’s Adventures in Wonderland"
+
+
+def test_a_kobo_highlight_gets_no_xpointers_for_a_file_other_than_the_library_epub(kobo_book):
+    span = kobo_book.span["kobo.8.1"]
+    wire = {}
+
+    annotation_routes._add_device_xpointers(
+        [_kobo_row(span, "Alice’s Adventures in Wonderland")], [wire], kobo_book.book, "KEPUB")
+
+    assert "start_xpointer" not in wire
+
+
+def test_a_kobo_highlight_whose_words_do_not_start_in_its_span_gets_no_xpointers(kobo_book):
+    span = kobo_book.span["kobo.8.1"]
+    wire = {}
+
+    annotation_routes._add_device_xpointers(
+        [_kobo_row(span, "Down the Rabbit-Hole")], [wire], kobo_book.book, "EPUB")
+
+    assert "start_xpointer" not in wire

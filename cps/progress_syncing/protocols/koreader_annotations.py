@@ -103,11 +103,12 @@ def build_pull_payload(user_id: int, book_id: int, session, *,
         .all()
     )
     annotations = [to_portable(r) for r in rows]
+    # Placing highlights reads the book's text, which is file work; keep it
+    # off the request greenlet.
+    from ...services.parallel import run_blocking
     if book is not None and book_format:
-        _add_device_xpointers(rows, annotations, book, book_format)
+        run_blocking(lambda: _add_device_xpointers(rows, annotations, book, book_format))
     if book is not None and quotes:
-        # Reading the book's text is file work; keep it off the request greenlet.
-        from ...services.parallel import run_blocking
         run_blocking(lambda: _add_text_quotes(rows, annotations, book))
     return {"annotations": annotations, "annotation_count": len(annotations)}
 
@@ -122,7 +123,6 @@ def _add_text_quotes(rows, annotations, book) -> None:
     copy of the book gives no quote, never other words.
     """
     from ...annotations import _book_format_path, _cfi_source_path
-    from ...services import kepub_alignment
     from ...services import koreader_xpointer as kx
     from ...services import text_anchor
     from ...services.kobo_position import _extract_kobospan_id
@@ -139,13 +139,8 @@ def _add_text_quotes(rows, annotations, book) -> None:
             span = _extract_kobospan_id(row.start_container_path or "")
             if row.position_type == "koreader_xpointer" and row.start_xpointer and row.end_xpointer:
                 pair = (row.start_xpointer, row.end_xpointer)
-            elif span and kepub and "!!" in (row.content_id or ""):
-                # The Kobo's offset counts characters of a DOM this server does
-                # not rebuild, so the words place the highlight inside the span.
-                text_range = kepub_alignment.span_text_range(
-                    epub, kepub, row.content_id.split("!!", 1)[1], span)
-                placed = text_anchor.place_in_text_range(epub, text_range, row.highlighted_text)
-                pair = placed[:2] if placed else None
+            elif span and kepub:
+                pair = _kobo_span_xpointers(row, span, epub, kepub)
             elif row.cfi_range and _cfi_source_path(row, book) == epub:
                 pair = kx.cfi_range_to_xpointers(epub, row.cfi_range)
             if not pair:
@@ -159,15 +154,37 @@ def _add_text_quotes(rows, annotations, book) -> None:
             wire["text_quote"] = quote
 
 
-def _add_device_xpointers(rows, annotations, book, book_format) -> None:
-    """Put crengine XPointers on pulled highlights that only have a CFI (#324).
+def _kobo_span_xpointers(row, span, epub, kepub):
+    """XPointers into ``epub`` around a Kobo highlight's words, or None.
 
-    A highlight made in the web reader (or a Kobo one with a computed CFI) is
-    stored as a CFI, which KOReader cannot place. The device applies any pulled
-    highlight carrying ``start_xpointer``/``end_xpointer``, so derive them here
-    per request -- they belong to the device's file, not to the row, and a
-    replaced book simply derives again. ``position_type`` and ``cfi_range`` are
-    left as stored.
+    The Kobo's offset counts characters of a DOM this server does not
+    rebuild, so the words place the highlight inside the KEPUB span it names
+    (``kepub_alignment``): a highlight whose words do not start there once is
+    not placed.
+    """
+    from ...services import kepub_alignment
+    from ...services import text_anchor
+
+    if "!!" not in (row.content_id or ""):
+        return None
+    text_range = kepub_alignment.span_text_range(
+        epub, kepub, row.content_id.split("!!", 1)[1], span)
+    placed = text_anchor.place_in_text_range(epub, text_range, row.highlighted_text)
+    return placed[:2] if placed else None
+
+
+def _add_device_xpointers(rows, annotations, book, book_format) -> None:
+    """Put crengine XPointers on pulled highlights KOReader cannot place (#324).
+
+    A highlight made in the web reader is stored as a CFI and one made on a
+    Kobo as a KoboSpan; KOReader can place neither. The device applies any
+    pulled highlight carrying ``start_xpointer``/``end_xpointer``, so derive
+    them here per request -- they belong to the device's file, not to the row,
+    and a replaced book simply derives again. ``position_type``, ``cfi_range``
+    and the Kobo anchor are left as stored.
+
+    A Kobo highlight is placed by its words in the library EPUB, so it gets
+    XPointers only when that EPUB is the file the device holds.
 
     Only a CFI expressed against the very file the device holds is converted
     (the web reader's CFIs are EPUB coordinates, a Kobo row's may be KEPUB), and
@@ -176,19 +193,28 @@ def _add_device_xpointers(rows, annotations, book, book_format) -> None:
     words.
     """
     from ...annotations import _book_format_path, _cfi_source_path
+    from ...services.kobo_position import _extract_kobospan_id
     from ...services.koreader_xpointer import derive_xpointers
 
     device_path = _book_format_path(book, book_format)
     if not device_path:
         return
+    epub = _book_format_path(book, "EPUB")
+    kepub = _book_format_path(book, "KEPUB") if device_path == epub else None
     for row, wire in zip(rows, annotations):
-        if (row.hidden or not row.cfi_range or not row.highlighted_text
+        if (row.hidden or not row.highlighted_text
                 or wire.get("start_xpointer") or wire.get("end_xpointer")):
             continue
         try:
-            if _cfi_source_path(row, book) != device_path:
+            span = _extract_kobospan_id(row.start_container_path or "")
+            if row.cfi_range:
+                if _cfi_source_path(row, book) != device_path:
+                    continue
+                pair = derive_xpointers(device_path, row.cfi_range, row.highlighted_text)
+            elif span and kepub:
+                pair = _kobo_span_xpointers(row, span, epub, kepub)
+            else:
                 continue
-            pair = derive_xpointers(device_path, row.cfi_range, row.highlighted_text)
         except Exception:  # pragma: no cover - a derived anchor is optional
             log.warning("KOReader pull: could not derive XPointers for %s",
                         row.annotation_id, exc_info=True)
