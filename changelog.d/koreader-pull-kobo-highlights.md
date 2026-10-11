@@ -1,0 +1,2 @@
+### Fixed
+- **Kobo highlights now appear in KOReader.** A book opened in KOReader with the CWNG sync plugin received its Kobo highlights but drew none, because the server sent them without positions KOReader can place. They are now placed by their words in the library EPUB, which is the file KOReader holds. A highlight whose words can't be found where the Kobo marked them is still left out, rather than drawn on the wrong passage.

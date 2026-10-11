@@ -207,9 +207,9 @@ def _add_device_xpointers(rows, annotations, book, book_format) -> None:
             continue
         try:
             span = _extract_kobospan_id(row.start_container_path or "")
-            if row.cfi_range:
-                if _cfi_source_path(row, book) != device_path:
-                    continue
+            # A Kobo row's computed CFI is a KEPUB coordinate, so on an EPUB
+            # device it falls through to the row's span.
+            if row.cfi_range and _cfi_source_path(row, book) == device_path:
                 pair = derive_xpointers(device_path, row.cfi_range, row.highlighted_text)
             elif span and kepub:
                 pair = _kobo_span_xpointers(row, span, epub, kepub)

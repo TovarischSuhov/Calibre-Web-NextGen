@@ -525,3 +525,17 @@ def test_a_kobo_highlight_whose_words_do_not_start_in_its_span_gets_no_xpointers
         [_kobo_row(span, "Down the Rabbit-Hole")], [wire], kobo_book.book, "EPUB")
 
     assert "start_xpointer" not in wire
+
+
+def test_a_kobo_highlight_with_a_kepub_cfi_still_reaches_koreader_by_its_span(kobo_book):
+    # The server computes a CFI for a Kobo row from the KEPUB; that is no
+    # coordinate in the EPUB the device holds, so the span has to place it.
+    span = kobo_book.span["kobo.8.1"]
+    row = _kobo_row(span, "Alice’s Adventures in Wonderland")
+    row.cfi_range = "epubcfi(/6/4!/4/2,/1:0,/1:32)"
+    wire = {}
+
+    annotation_routes._add_device_xpointers([row], [wire], kobo_book.book, "EPUB")
+
+    assert kx.passage_between(kobo_book.epub, wire["start_xpointer"], wire["end_xpointer"]) \
+        == "Alice’s Adventures in Wonderland"
