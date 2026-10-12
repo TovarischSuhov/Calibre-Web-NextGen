@@ -316,12 +316,13 @@ def test_post_download_restore_serves_only_the_devices_own_rows(downloaded_world
     assert (download.restore_state, download.restored_count) == ("served", len(A_OWN))
 
 
-# == 17a.3 An identified Kobo never gets an unscoped upstream body ===========
-# Spec 17a.3 (CWNG, 2026-10-12): with two-way sync on and a CWNG-owned book,
-# an identified Kobo is answered from CWNG: a legitimately empty own set is a
-# valid response (the empty set, or this device's own snapshot), with no
-# upstream call and no 503 (a 503 in a normal state is a sync error on every
-# sync). An unresolved Kobo keeps today's proxy.
+# == 17a.3 An identified Kobo never gets another device's rows ==============
+# Spec 17a.3, narrowed 2026-10-12: when CWNG's local set is proven complete
+# (authoritative, or a post-download restore), an identified Kobo gets only its
+# own rows; with none it gets a valid empty set, not Kobo's upstream body.
+# When the local set is NOT proven complete, the upstream body is the only
+# complete source, so today's proxy stands even for an identified Kobo (pinned
+# by the five proxy tests in test_1923_owned_annotations_local_authority.py).
 
 UPSTREAM = b'{"annotations":[{"id":"b-1"},{"id":"cloud-only"}],"nextPageOffsetToken":null}'
 
@@ -329,7 +330,12 @@ UPSTREAM = b'{"annotations":[{"id":"b-1"},{"id":"cloud-only"}],"nextPageOffsetTo
 def _upstream_must_not_be_called(monkeypatch):
     monkeypatch.setattr(
         rs, "proxy_to_kobo_reading_services",
-        lambda **_k: pytest.fail("an identified Kobo must not get Kobo's unscoped set"))
+        lambda **_k: pytest.fail("a proven-complete local set must not be replaced by Kobo's"))
+
+
+def _upstream_answers(monkeypatch):
+    monkeypatch.setattr(rs, "proxy_to_kobo_reading_services",
+                        lambda **_k: make_response(UPSTREAM, 200, {"ETag": 'W/"kobo"'}))
 
 
 def _others_only(session):
@@ -352,7 +358,7 @@ def test_after_a_download_with_no_own_rows_the_kobo_gets_a_clean_empty_set(
         app, session, monkeypatch):
     """Right after a download the device's set is empty by construction
     (render_post_download_restore), so the empty set is safe; the upstream
-    set, which holds another Kobo's row, is not."""
+    set, which holds another Kobo's row, is not. (Luna's review probe.)"""
     _book_state(session, sticky=False)
     _others_only(session)
     ledger.record_download(device_id=KOBO_A, book_id=BOOK_ID, book_format="kepub",
@@ -362,30 +368,27 @@ def test_after_a_download_with_no_own_rows_the_kobo_gets_a_clean_empty_set(
     _clean_own_answer(_get(app, KOBO_A))
 
 
-def test_an_identified_kobo_with_no_own_rows_syncs_cleanly_without_kobo(
+def test_an_authoritative_book_with_no_own_rows_gives_the_kobo_a_clean_empty_set(
         app, session, monkeypatch):
-    _book_state(session, sticky=False)
+    """Live render: CWNG is the book's authority and the account's set is
+    non-empty, but none of it is this Kobo's."""
+    _book_state(session, sticky=True)
     _others_only(session)
     _upstream_must_not_be_called(monkeypatch)
 
     _clean_own_answer(_get(app, KOBO_A))
 
 
-def test_an_identified_kobo_whose_own_set_is_not_eligible_is_not_sent_kobos_set(
+def test_without_a_download_or_authority_an_identified_kobo_still_proxies(
         app, session, monkeypatch):
-    """Own rows exist but the book has no accepted device seed, so today's
-    local-eligibility gate refuses the local answer and proxies. The answer
-    must still be CWNG's: never the upstream set and never a 503 in this
-    normal state. Spec 17a.3(c) allows the empty set or this device's own
-    snapshot; which one is the implementation's call (flagged in
-    TESTS-STATE), so only the device's own rows may appear."""
+    """The same household as the download test, minus the download: the local
+    set is not proven complete, so Kobo's upstream body (its own store of what
+    the account's Kobos uploaded) is the answer, own rows or not."""
     _book_state(session, sticky=False)
     _rows(session)
-    _upstream_must_not_be_called(monkeypatch)
+    _upstream_answers(monkeypatch)
 
-    response = _get(app, KOBO_A)
-
-    assert set(_ids(response)) <= A_OWN
+    assert _get(app, KOBO_A).get_data() == UPSTREAM
 
 
 def test_an_unresolved_kobo_with_no_rows_of_its_own_still_proxies(app, session, monkeypatch):
@@ -393,8 +396,7 @@ def test_an_unresolved_kobo_with_no_rows_of_its_own_still_proxies(app, session, 
     today's proxy."""
     _book_state(session, sticky=False)
     _others_only(session)
-    monkeypatch.setattr(rs, "proxy_to_kobo_reading_services",
-                        lambda **_k: make_response(UPSTREAM, 200, {"ETag": 'W/"kobo"'}))
+    _upstream_answers(monkeypatch)
 
     response = _get(app, None)
 
