@@ -20,7 +20,7 @@ Two halves:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import update
 from sqlalchemy.exc import SQLAlchemyError
@@ -70,10 +70,26 @@ def _resolve_download_attribution(*, user_id, book_id, log):
         user_devices = ub.session.query(ub.Device).filter(
             ub.Device.user_id == int(user_id),
             ub.Device.kind == "kobo",
-            ub.Device.active.is_(True),
         ).order_by(ub.Device.last_seen_at.desc(), ub.Device.id.desc()).all()
-        if not user_devices:
+        active_devices = [device for device in user_devices if device.active]
+        if not active_devices:
             return None, False
+        now = _now()
+
+        def recent(value, age, *, inclusive=True):
+            if value is None:
+                return False
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value >= now - age if inclusive else value > now - age
+
+        candidates = {
+            device.id for device in user_devices
+            if recent(device.last_seen_at, timedelta(days=30))
+        }
+        active_ids = {device.id for device in active_devices}
+        device_id = active_devices[0].id
+        fresh_arms = set()
         if book_id is not None:
             armed_rows = (
                 ub.session.query(ub.KoboDeviceBookDownload)
@@ -87,11 +103,19 @@ def _resolve_download_attribution(*, user_id, book_id, log):
                 .order_by(ub.KoboDeviceBookDownload.downloaded_at.desc())
                 .all()
             )
-            if armed_rows:
-                # Preserve the newest armed device for annotation restoration.
-                # Two devices armed for the same book do not identify its GET.
-                return armed_rows[0].device_id, len(armed_rows) == 1
-        return user_devices[0].id, len(user_devices) == 1
+            restore_arms = [row for row in armed_rows if row.device_id in active_ids]
+            if restore_arms:
+                # Restore still follows the newest active arm, even if stale.
+                device_id = restore_arms[0].device_id
+            fresh_arms = {
+                row.device_id for row in armed_rows
+                if row.device_id in candidates
+                and recent(row.downloaded_at, timedelta(minutes=15), inclusive=False)
+            }
+        # Inactive but recently synced Kobos remain possible senders. Neither
+        # an old arm nor a different sole candidate proves the restore guess.
+        unambiguous = candidates == {device_id} or fresh_arms == {device_id}
+        return device_id, unambiguous
     except SQLAlchemyError:
         ub.session.rollback()
         log.warning(
