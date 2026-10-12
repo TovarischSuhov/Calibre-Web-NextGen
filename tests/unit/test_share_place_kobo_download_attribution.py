@@ -227,3 +227,57 @@ def test_two_kobos_an_armed_row_sends_proof_to_the_armed_kobo_only(monkeypatch, 
     assert _served(sw, sw.a) == sw.exact
     assert _served(sw, sw.b) == sw.b_own
     assert _ledger(sw, sw.b).kepub_file_identity in (None, "")
+
+
+# == Section 17a.2: who counts as a candidate, and which arms name a device ===
+# Candidates are the account's Kobos seen in the last 30 days, active or not.
+# An armed row names the device only when it was armed in the last 15 minutes.
+# Restore attribution is unchanged.
+
+def _age(sw, device, **delta):
+    sw.session.query(ub.Device).filter_by(id=device.id).update(
+        {"last_seen_at": datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(**delta)})
+    sw.session.commit()
+
+
+def test_a_thirty_day_old_arm_does_not_name_the_downloader(monkeypatch, two_kobos):
+    sw = two_kobos
+    stale = _ledger(sw, sw.a)
+    stale.restore_state = "armed"
+    stale.downloaded_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=30)
+    sw.session.commit()
+
+    _download(monkeypatch, sw)
+
+    row = _ledger(sw, sw.a)
+    assert row.restore_state == "pending", "restore still follows the armed row"
+    assert not row.kepub_file_identity
+    assert _served(sw, sw.a) == sw.a_own
+    assert _served(sw, sw.b) == sw.b_own
+
+
+def test_an_inactive_but_recently_seen_second_kobo_still_makes_it_ambiguous(
+        monkeypatch, two_kobos):
+    sw = two_kobos
+    sw.session.query(ub.Device).filter_by(id=sw.b.id).update({"active": False})
+    sw.session.commit()
+
+    _download(monkeypatch, sw)
+
+    row = _ledger(sw, sw.a)
+    assert row.restore_state == "pending", "restore goes to the one active Kobo, as today"
+    assert row.kepub_file_identity == ""
+    assert _served(sw, sw.a) == sw.a_own
+
+
+def test_a_kobo_not_seen_for_over_thirty_days_is_not_a_candidate(monkeypatch, two_kobos):
+    """B is registered and active but silent for 31 days; A is the one Kobo
+    that could have downloaded, so its download is proof."""
+    sw = two_kobos
+    _age(sw, sw.b, days=31)
+
+    _download(monkeypatch, sw)
+
+    assert _ledger(sw, sw.a).kepub_file_identity
+    assert _served(sw, sw.a) == sw.exact
+    assert _served(sw, sw.b) == sw.b_own

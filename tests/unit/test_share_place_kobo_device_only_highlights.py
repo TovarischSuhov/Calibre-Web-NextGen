@@ -316,21 +316,86 @@ def test_post_download_restore_serves_only_the_devices_own_rows(downloaded_world
     assert (download.restore_state, download.restored_count) == ("served", len(A_OWN))
 
 
-def test_post_download_restore_with_no_own_rows_proxies_rather_than_sending_others(
-        app, session, monkeypatch):
-    """Other devices' rows are not a restore. Nothing of its own to restore is
-    today's 'empty local set' answer: proxy, never an empty 200."""
-    _book_state(session, sticky=False)
+# == 17a.3 An identified Kobo never gets an unscoped upstream body ===========
+# Spec 17a.3 (CWNG, 2026-10-12): with two-way sync on and a CWNG-owned book,
+# an identified Kobo is answered from CWNG: a legitimately empty own set is a
+# valid response (the empty set, or this device's own snapshot), with no
+# upstream call and no 503 (a 503 in a normal state is a sync error on every
+# sync). An unresolved Kobo keeps today's proxy.
+
+UPSTREAM = b'{"annotations":[{"id":"b-1"},{"id":"cloud-only"}],"nextPageOffsetToken":null}'
+
+
+def _upstream_must_not_be_called(monkeypatch):
+    monkeypatch.setattr(
+        rs, "proxy_to_kobo_reading_services",
+        lambda **_k: pytest.fail("an identified Kobo must not get Kobo's unscoped set"))
+
+
+def _others_only(session):
     session.add_all([_row("kindle-1", KINDLE, "koreader"),
                      _row("web-1", BROWSER, "webreader"),
                      _row("b-1", KOBO_B, "kobo")])
     session.commit()
+
+
+def _clean_own_answer(response):
+    """A valid sync answer with nothing of the device's own: 200, a complete
+    page, no foreign row."""
+    assert response.status_code == 200, response.get_data(as_text=True)
+    payload = json.loads(response.get_data())
+    assert payload["nextPageOffsetToken"] is None
+    assert [row["id"] for row in payload["annotations"]] == []
+
+
+def test_after_a_download_with_no_own_rows_the_kobo_gets_a_clean_empty_set(
+        app, session, monkeypatch):
+    """Right after a download the device's set is empty by construction
+    (render_post_download_restore), so the empty set is safe; the upstream
+    set, which holds another Kobo's row, is not."""
+    _book_state(session, sticky=False)
+    _others_only(session)
     ledger.record_download(device_id=KOBO_A, book_id=BOOK_ID, book_format="kepub",
                            log=logging.getLogger("test"))
-    upstream = b'{"annotations":[{"id":"cloud-only"}],"nextPageOffsetToken":null}'
-    monkeypatch.setattr(rs, "proxy_to_kobo_reading_services",
-                        lambda **_k: make_response(upstream, 200, {"ETag": 'W/"kobo"'}))
+    _upstream_must_not_be_called(monkeypatch)
+
+    _clean_own_answer(_get(app, KOBO_A))
+
+
+def test_an_identified_kobo_with_no_own_rows_syncs_cleanly_without_kobo(
+        app, session, monkeypatch):
+    _book_state(session, sticky=False)
+    _others_only(session)
+    _upstream_must_not_be_called(monkeypatch)
+
+    _clean_own_answer(_get(app, KOBO_A))
+
+
+def test_an_identified_kobo_whose_own_set_is_not_eligible_is_not_sent_kobos_set(
+        app, session, monkeypatch):
+    """Own rows exist but the book has no accepted device seed, so today's
+    local-eligibility gate refuses the local answer and proxies. The answer
+    must still be CWNG's: never the upstream set and never a 503 in this
+    normal state. Spec 17a.3(c) allows the empty set or this device's own
+    snapshot; which one is the implementation's call (flagged in
+    TESTS-STATE), so only the device's own rows may appear."""
+    _book_state(session, sticky=False)
+    _rows(session)
+    _upstream_must_not_be_called(monkeypatch)
 
     response = _get(app, KOBO_A)
 
-    assert response.get_data() == upstream
+    assert set(_ids(response)) <= A_OWN
+
+
+def test_an_unresolved_kobo_with_no_rows_of_its_own_still_proxies(app, session, monkeypatch):
+    """Control (section 8): no registered device behind the request keeps
+    today's proxy."""
+    _book_state(session, sticky=False)
+    _others_only(session)
+    monkeypatch.setattr(rs, "proxy_to_kobo_reading_services",
+                        lambda **_k: make_response(UPSTREAM, 200, {"ETag": 'W/"kobo"'}))
+
+    response = _get(app, None)
+
+    assert response.get_data() == UPSTREAM

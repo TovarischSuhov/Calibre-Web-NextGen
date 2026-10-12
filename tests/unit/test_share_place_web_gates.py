@@ -677,3 +677,43 @@ def test_a_save_without_the_share_flag_shares_as_older_clients_expect(w, rows):
     assert shared_bookmark(w)[0] == pytest.approx(30)
     assert account_status(w) == IN_PROGRESS
     assert [row[1] for row in kosync_rows(w)] == [pytest.approx(30)]
+
+
+# == 17a.5 A Browser that cannot be registered stays private =================
+# CWNG, 2026-10-12 (spec 17a.5, overriding the first draft and amending 8):
+# with the gates on, a save whose Browser cannot be resolved changes no shared
+# carrier; Hardcover hears it exactly as it hears an unchecked Browser's save
+# (test_unchecked_save_is_the_browsers_own_and_changes_nothing_shared); and
+# each occurrence is logged once at warning level with the user and book ids.
+
+@pytest.mark.parametrize("failure", ["returns-none", "raises"])
+@pytest.mark.parametrize("route", ["spa", "classic"])
+def test_a_browser_that_cannot_be_registered_stays_private(
+        w, rows, monkeypatch, caplog, route, failure):
+    import logging
+    w.koreader("koreader-1", "KOReader", checked=True)
+    w.push(rows["mid"]["xpointer"], 40, client_at=_now() - timedelta(seconds=30))
+    w.session.query(ub.Device).filter_by(
+        user_id=w.reader.id, kind="webreader").delete(synchronize_session=False)
+    w.session.commit()
+
+    def unavailable(**_kwargs):
+        if failure == "raises":
+            raise RuntimeError("simulated registration failure")
+        return None
+    monkeypatch.setattr(device_registry, "ensure_webreader_device_best_effort", unavailable)
+    before = account_snapshot(w)
+    assert before[0][0] == pytest.approx(40)
+
+    with caplog.at_level(logging.WARNING):
+        save(w, 99.5, cfi_of(w, rows["late"]), route=route)
+
+    assert account_snapshot(w) == before        # Kobo bookmark, ReadBook, kosync, read column
+    assert w.pull() == (pytest.approx(40), rows["mid"]["xpointer"])
+    assert w.hardcover == [(BOOK, pytest.approx(99.5))]
+    named = [record for record in caplog.records
+             if record.levelno == logging.WARNING
+             and str(w.reader.id) in record.getMessage()
+             and str(BOOK) in record.getMessage()
+             and "observation failed" not in record.getMessage()]
+    assert len(named) == 1, [record.getMessage() for record in caplog.records]
