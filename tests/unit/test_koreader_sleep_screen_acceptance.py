@@ -468,6 +468,8 @@ def test_account_quota_serializes_concurrent_saves_at_64_mib(threaded_world):
 
     assert sorted(response.status_code for response in results) == [200, 413]
     assert sum(response.status_code == 200 for response in results) == 1
+    seeded_ids = [device.id for device in seeded_devices]
+    contender_ids = [device.id for device in contenders]
     threaded_world.session.remove()
     thread_rows = threaded_world.session.query(ub.Device).filter(
         ub.Device.user_id == threaded_world.session.query(ub.User.id).filter_by(name="alice").scalar_subquery()
@@ -481,14 +483,14 @@ def test_account_quota_serializes_concurrent_saves_at_64_mib(threaded_world):
         for row in all_rows for column in byte_columns
     )
     saved_contenders = sum(
-        threaded_world.session.query(screen_model).filter_by(device_id=device.id).count() > 0
-        for device in contenders
+        threaded_world.session.query(screen_model).filter_by(device_id=device_id).count() > 0
+        for device_id in contender_ids
     )
     assert stored_bytes <= ACCOUNT_LIMIT
     assert saved_contenders == 1
     assert len(thread_rows) == 5, "quota rejection must not drop a device or its owner"
     assert threaded_world.session.query(screen_model).filter(
-        screen_model.device_id.in_([device.id for device in seeded_devices]),
+        screen_model.device_id.in_(seeded_ids),
     ).count() == 3
 
 
