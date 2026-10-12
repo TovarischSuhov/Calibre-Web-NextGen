@@ -22,14 +22,11 @@ live set cannot be read. With no snapshot at all, a loud 503 is the terminal
 ever-authoritative fallback; it is still safer than claiming unknown means
 empty or proxying Kobo's known-stale copy.
 
-The historical union renderer is used after Stage 0 proves that the device's
+This renderer is used only after Stage 0 proves that the authenticated device's
 complete set was accepted and the book state is ``authoritative`` (the stored
 spelling of "fully seeded").  GET and PATCH use the same proof gate: until that
 proof exists, both continue through Kobo so a partial local set cannot replace
 the device set and new uploads continue feeding Kobo's more-complete copy.
-Identified devices with two-way sync enabled instead receive their own complete
-local set even before seeding: an unscoped cloud set cannot prove ownership.
-A successful complete read may legitimately be empty; a read error may not.
 
 Before authority, the complete current set must fit in the requested page.
 After authority, local PATCH acknowledgements make Kobo's copy stale, so a set
@@ -1226,12 +1223,12 @@ def _emergency_render(*, user_id, book_id, entitlement_id, page_limit,
 
 
 def _render_owned_annotations(*, user_id, book_id, entitlement_id, page_limit,
-                              device_id, log, require_seed_proof=True):
+                              device_id, log):
     reasons = []
     rows = _annotation_rows(user_id, book_id, page_limit)
     if len(rows) > page_limit:
         return None
-    if require_seed_proof and not _render_count_is_safe(
+    if not _render_count_is_safe(
         user_id=user_id, book_id=book_id, device_id=device_id,
         row_count=len(rows),
         row_ids={annotation.annotation_id for annotation, _ in rows},
@@ -1349,9 +1346,10 @@ def render_post_download_restore(*, user_id, book_id, entitlement_id, device_id,
                                  log, reanchor=None):
     """Answer the first annotation GET after a device download from CWNG rows.
 
-    Returns ``(body, etag)`` or ``None`` (nothing pending, or nothing to
-    restore). The caller answers identified devices from their own complete
-    local set; unresolved devices retain the historical proxy.
+    Returns ``(body, etag)`` or ``None`` (nothing pending, or the account
+    has no local rows: the caller then proxies exactly as before). An
+    identified device is restored only its own rows, which may be an empty
+    set when the account's rows all came from other devices.
 
     The seeding gates exist so that a partial local set never replaces a
     fuller one on the device. Right after a download the device set is
@@ -1380,18 +1378,24 @@ def render_post_download_restore(*, user_id, book_id, entitlement_id, device_id,
     except Exception:
         _safe_rollback()
         rows = _simple_annotation_rows(user_id, book_id, 2 ** 31 - 2)
-    rows = _device_pull_rows(rows, device_id)
     if not rows:
+        # The account's local set is itself empty: nothing proves Kobo's
+        # cloud copy incomplete, so the caller proxies exactly as before.
         ledger.settle_pending_download(pending, state=ledger.RESTORE_EMPTY, count=0)
         ub.session.commit()
         log.info(
             "Kobo post-download restore: no local annotations for "
-            "user_id=%s book_id=%s device_id=%s; no rows restored",
+            "user_id=%s book_id=%s device_id=%s; proxying",
             user_id, book_id, device_id,
         )
         return None
+    # Spec 17a.3: the account's set is non-empty and the device's set is
+    # empty by construction, so this device's own rows are the complete
+    # answer. With none of its own, that answer is a valid empty set; the
+    # upstream body would carry another Kobo's highlights.
+    rows = _device_pull_rows(rows, device_id)
 
-    if reanchor is not None:
+    if reanchor is not None and rows:
         try:
             reanchor([annotation for annotation, _ in rows])
         except Exception as error:
@@ -1428,6 +1432,8 @@ def render_post_download_restore(*, user_id, book_id, entitlement_id, device_id,
             etag = _transient_etag(user_id, book_id, normalized_content_id, digest)
 
     try:
+        # A served empty own set is still the device's complete answer:
+        # ``served`` keeps an armed row armed for the real download's GET.
         ledger.settle_pending_download(
             pending, state=ledger.RESTORE_SERVED, count=len(rows),
         )
@@ -1443,33 +1449,6 @@ def render_post_download_restore(*, user_id, book_id, entitlement_id, device_id,
         (" reasons=" + ",".join(reasons)) if reasons else "",
     )
     return body, etag
-
-
-def render_identified_complete_set(*, user_id, book_id, entitlement_id,
-                                   device_id, log):
-    """Read all own rows before seed eligibility, including a proven empty set.
-
-    Called only for an identified device, owned book, and enabled two-way sync.
-    Successful reads preserve every own row rather than replacing an ineligible
-    set with empty. Failed reads retain the snapshot-or-error rule.
-    """
-    if device_id is None:
-        return None
-    page_limit = 2 ** 31 - 1
-    try:
-        return _render_owned_annotations(
-            user_id=user_id, book_id=book_id, entitlement_id=entitlement_id,
-            page_limit=page_limit, device_id=device_id, log=log,
-            require_seed_proof=False,
-        )
-    except Exception as error:
-        _safe_rollback()
-        return _emergency_render(
-            user_id=user_id, book_id=book_id, entitlement_id=entitlement_id,
-            page_limit=page_limit, device_id=device_id, log=log,
-            reason=_failure_reason("identified_render", error),
-            force_authoritative=True,
-        )
 
 
 def render_owned_annotations(*, user_id, book_id, entitlement_id, page_limit,

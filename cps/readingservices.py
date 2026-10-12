@@ -836,7 +836,7 @@ def _proxy_owned_annotation_get(capture_session, ownership, entitlement_id):
 
 
 def _owned_annotation_get_response(capture_session, ownership, entitlement_id):
-    """Return an identified device's set, or the historical unresolved answer.
+    """Return one complete eligible local page, otherwise proxy upstream.
 
     The proxy leg is deliberately not byte-transparent: an owned book's GET
     withholds the device's cache validators, because a bodyless Kobo reply
@@ -845,13 +845,6 @@ def _owned_annotation_get_response(capture_session, ownership, entitlement_id):
     sticky = False
     authority_history_known = False
     page_limit = _owned_annotation_page_limit()
-    from cps.services.kobo_annotation_stage0 import emergency_override_disables
-    device_scoped = (
-        getattr(g, "annotation_origin_device_id", None) is not None
-        and bool(getattr(config, "config_kobo_two_way_annotation_sync", False))
-        and bool(getattr(current_user, "kobo_two_way_annotation_sync", False))
-        and not emergency_override_disables()
-    )
     try:
         from cps.services.kobo_annotation_authority import (
             AUTHORITY_EVER,
@@ -863,7 +856,6 @@ def _owned_annotation_get_response(capture_session, ownership, entitlement_id):
             local_get_is_eligible,
             prepare_authoritative_device_get,
             render_authoritative_complete_set,
-            render_identified_complete_set,
             render_owned_annotations,
             sticky_render_page_limit,
         )
@@ -973,7 +965,7 @@ def _owned_annotation_get_response(capture_session, ownership, entitlement_id):
                 response.headers["Content-Length"] = str(len(body))
                 response.headers["ETag"] = etag
                 return response
-        if not sticky and not device_scoped and (has_cursor or not local_get_is_eligible(
+        if not sticky and (has_cursor or not local_get_is_eligible(
             settings=config,
             user=current_user,
             book_id=ownership.id,
@@ -986,28 +978,16 @@ def _owned_annotation_get_response(capture_session, ownership, entitlement_id):
                 capture_session, ownership, entitlement_id,
             )
 
-        if device_scoped and not sticky:
-            rendered = render_identified_complete_set(
-                user_id=current_user.id, book_id=ownership.id,
-                entitlement_id=entitlement_id,
-                device_id=getattr(g, "annotation_origin_device_id", None), log=log,
-            )
-        else:
-            rendered = render_owned_annotations(
-                user_id=current_user.id,
-                book_id=ownership.id,
-                entitlement_id=entitlement_id,
-                page_limit=page_limit,
-                device_id=getattr(g, "annotation_origin_device_id", None),
-                log=log,
-            )
+        rendered = render_owned_annotations(
+            user_id=current_user.id,
+            book_id=ownership.id,
+            entitlement_id=entitlement_id,
+            page_limit=page_limit,
+            device_id=getattr(g, "annotation_origin_device_id", None),
+            log=log,
+        )
         if rendered is None:
             if not sticky:
-                if device_scoped:
-                    return _annotation_snapshot_or_503(
-                        user_id=current_user.id, book_id=ownership.id,
-                        capture_session=capture_session, entitlement_id=entitlement_id,
-                    )
                 return _proxy_owned_annotation_get(
                     capture_session, ownership, entitlement_id,
                 )
@@ -1082,7 +1062,7 @@ def _owned_annotation_get_response(capture_session, ownership, entitlement_id):
             response.headers["Content-Length"] = str(len(body))
             response.headers["ETag"] = etag
             return response
-        if device_scoped or not authority_history_known:
+        if not authority_history_known:
             return _annotation_snapshot_or_503(
                 user_id=current_user.id,
                 book_id=ownership.id,
@@ -1407,10 +1387,10 @@ def _persist_owned_patch_atomically(
 def handle_annotations(entitlement_id):
     """Handle annotation requests for a specific book.
 
-    GET: identified devices with two-way sync enabled receive their complete
-    own set for owned books, including a legitimately empty set. Unowned books
-    retain the byte-transparent Kobo proxy. Unresolved devices keep the
-    historical seed gates and validator-stripping proxy for unseeded books.
+    GET: fully seeded owned books are answered from CWNG's complete visible
+    set; unowned books retain the byte-transparent Kobo proxy.  An unseeded
+    owned book is proxied too, but without the device's cache validators: a
+    bodyless reply would empty that book's annotations on the device.
     PATCH: persist locally (source='kobo'), then dispatch through
     each registered + enabled annotation_sync handler (Hardcover today; future
     Readwise / Notion / etc.). All DB writes happen in the dispatcher; this
