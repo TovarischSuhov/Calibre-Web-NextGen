@@ -526,16 +526,13 @@ def _todays_web_save(w, rows, route):
     assert (own.progress_percent, own.cfi) == (pytest.approx(30), early)
 
 
-@pytest.mark.parametrize("value", [None, "0", "user:{other}"])
+@pytest.mark.parametrize("value", ["0", "user:{other}"])
 @pytest.mark.parametrize("route", ["spa", "classic"])
 def test_switch_off_keeps_todays_web_save(w, rows, monkeypatch, value, route):
-    """Parity with 73790181e: unset (the PR 4 default), the emergency ``0``,
-    and an allow-list without this account."""
+    """Parity with 73790181e: the emergency ``0`` and an allow-list without
+    this account. (Unset is on since PR 5: test_share_place_switch_on.)"""
     from cps.services.share_place import gates_enforced
-    if value is None:
-        monkeypatch.delenv(SWITCH, raising=False)
-    else:
-        monkeypatch.setenv(SWITCH, value.format(other=w.reader.id + 100))
+    monkeypatch.setenv(SWITCH, value.format(other=w.reader.id + 100))
     assert gates_enforced(w.reader.id) is False
 
     _todays_web_save(w, rows, route)
@@ -579,7 +576,7 @@ def test_the_devices_list_includes_the_browser_before_any_web_reading(w):
 
 
 @pytest.mark.parametrize("value, expected", [
-    (None, False), ("0", False), ("1", True),
+    (None, True), ("0", False), ("1", True),
     ("user:{other}", False), ("user:{other},{me}", True),
 ])
 def test_the_devices_list_says_whether_gates_are_enforced(w, monkeypatch, value, expected):
@@ -612,7 +609,7 @@ def test_a_private_browser_save_never_becomes_koreaders_exact_place(
     from cps.services import koreader_xpointer
     from cps.services.koreader_position import is_xpointer
     if private == "preview-gates-off":
-        monkeypatch.delenv(SWITCH, raising=False)
+        monkeypatch.setenv(SWITCH, "0")
     w.koreader("koreader-1", "KOReader", checked=True)
     me = browser(w, checked=True)
     shared_cfi = cfi_of(w, rows["late"])
