@@ -22,11 +22,14 @@ live set cannot be read. With no snapshot at all, a loud 503 is the terminal
 ever-authoritative fallback; it is still safer than claiming unknown means
 empty or proxying Kobo's known-stale copy.
 
-This renderer is used only after Stage 0 proves that the authenticated device's
+The historical union renderer is used after Stage 0 proves that the device's
 complete set was accepted and the book state is ``authoritative`` (the stored
 spelling of "fully seeded").  GET and PATCH use the same proof gate: until that
 proof exists, both continue through Kobo so a partial local set cannot replace
 the device set and new uploads continue feeding Kobo's more-complete copy.
+Identified devices with two-way sync enabled instead receive their own complete
+local set even before seeding: an unscoped cloud set cannot prove ownership.
+A successful complete read may legitimately be empty; a read error may not.
 
 Before authority, the complete current set must fit in the requested page.
 After authority, local PATCH acknowledgements make Kobo's copy stale, so a set
@@ -1223,12 +1226,12 @@ def _emergency_render(*, user_id, book_id, entitlement_id, page_limit,
 
 
 def _render_owned_annotations(*, user_id, book_id, entitlement_id, page_limit,
-                              device_id, log):
+                              device_id, log, require_seed_proof=True):
     reasons = []
     rows = _annotation_rows(user_id, book_id, page_limit)
     if len(rows) > page_limit:
         return None
-    if not _render_count_is_safe(
+    if require_seed_proof and not _render_count_is_safe(
         user_id=user_id, book_id=book_id, device_id=device_id,
         row_count=len(rows),
         row_ids={annotation.annotation_id for annotation, _ in rows},
@@ -1347,7 +1350,8 @@ def render_post_download_restore(*, user_id, book_id, entitlement_id, device_id,
     """Answer the first annotation GET after a device download from CWNG rows.
 
     Returns ``(body, etag)`` or ``None`` (nothing pending, or nothing to
-    restore: the caller then proxies exactly as before).
+    restore). The caller answers identified devices from their own complete
+    local set; unresolved devices retain the historical proxy.
 
     The seeding gates exist so that a partial local set never replaces a
     fuller one on the device. Right after a download the device set is
@@ -1382,7 +1386,7 @@ def render_post_download_restore(*, user_id, book_id, entitlement_id, device_id,
         ub.session.commit()
         log.info(
             "Kobo post-download restore: no local annotations for "
-            "user_id=%s book_id=%s device_id=%s; proxying",
+            "user_id=%s book_id=%s device_id=%s; no rows restored",
             user_id, book_id, device_id,
         )
         return None
@@ -1439,6 +1443,33 @@ def render_post_download_restore(*, user_id, book_id, entitlement_id, device_id,
         (" reasons=" + ",".join(reasons)) if reasons else "",
     )
     return body, etag
+
+
+def render_identified_complete_set(*, user_id, book_id, entitlement_id,
+                                   device_id, log):
+    """Read all own rows before seed eligibility, including a proven empty set.
+
+    Called only for an identified device, owned book, and enabled two-way sync.
+    Successful reads preserve every own row rather than replacing an ineligible
+    set with empty. Failed reads retain the snapshot-or-error rule.
+    """
+    if device_id is None:
+        return None
+    page_limit = 2 ** 31 - 1
+    try:
+        return _render_owned_annotations(
+            user_id=user_id, book_id=book_id, entitlement_id=entitlement_id,
+            page_limit=page_limit, device_id=device_id, log=log,
+            require_seed_proof=False,
+        )
+    except Exception as error:
+        _safe_rollback()
+        return _emergency_render(
+            user_id=user_id, book_id=book_id, entitlement_id=entitlement_id,
+            page_limit=page_limit, device_id=device_id, log=log,
+            reason=_failure_reason("identified_render", error),
+            force_authoritative=True,
+        )
 
 
 def render_owned_annotations(*, user_id, book_id, entitlement_id, page_limit,
