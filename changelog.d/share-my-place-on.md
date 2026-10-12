@@ -9,4 +9,5 @@
 ### Fixed
 
 - **An identified KOReader device cannot change or remove another device's highlights.** Copies left on the device from earlier syncs leave their owner's highlights and notes unchanged.
+- **Open without saving progress keeps your reading status unchanged**, including when the web reader has Share my place turned on.
 - **The web reader keeps your place private if CWNG cannot register it.** If CWNG temporarily cannot register the web reader, its reading place stays private while Hardcover progress updates continue as they do for an unchecked web reader.
