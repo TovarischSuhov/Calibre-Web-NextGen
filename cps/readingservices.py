@@ -383,6 +383,7 @@ def _annotation_snapshot_or_503(
         )
         rendered = load_last_served_complete_set(
             user_id=user_id, book_id=book_id, log=log,
+            device_id=getattr(g, "annotation_origin_device_id", None),
         )
     except Exception:
         rendered = None
@@ -899,7 +900,19 @@ def _owned_annotation_get_response(capture_session, ownership, entitlement_id):
                     user_id=current_user.id,
                     book_id=ownership.id,
                     log=log,
+                    device_id=getattr(g, "annotation_origin_device_id", None),
                 )
+                if rendered is None and getattr(g, "annotation_origin_device_id", None) is None:
+                    # The single latest snapshot may belong to an identified
+                    # device. An unresolved request still gets today's union
+                    # when the live store can supply a complete response.
+                    rendered = render_owned_annotations(
+                        user_id=current_user.id, book_id=ownership.id,
+                        entitlement_id=entitlement_id,
+                        page_limit=sticky_render_page_limit(
+                            current_user.id, ownership.id, page_limit),
+                        device_id=None, log=log,
+                    )
                 if rendered is None:
                     log.critical(
                         "Kobo authoritative GET has neither live proof nor "
@@ -1020,6 +1033,7 @@ def _owned_annotation_get_response(capture_session, ownership, entitlement_id):
                 user_id=current_user.id,
                 book_id=ownership.id,
                 log=log,
+                device_id=getattr(g, "annotation_origin_device_id", None),
             )
             emergency_limit = sticky_render_page_limit(
                 current_user.id, ownership.id, page_limit,

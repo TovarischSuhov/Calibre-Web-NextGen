@@ -45,7 +45,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from flask import request
+from flask import has_request_context, request
+from sqlalchemy import and_, or_
 from sqlalchemy.exc import SQLAlchemyError
 
 from ... import csrf, logger, ub
@@ -96,12 +97,21 @@ def build_pull_payload(user_id: int, book_id: int, session, *,
     the XPointers KOReader needs to place them (see ``_add_device_xpointers``).
     """
     from ...services.annotation_portable import to_portable
-    rows = (
-        session.query(ub.Annotation)
-        .filter(ub.Annotation.user_id == user_id, ub.Annotation.book_id == book_id)
-        .order_by(ub.Annotation.id.asc())
-        .all()
-    )
+    query = session.query(ub.Annotation).filter(
+        ub.Annotation.user_id == user_id, ub.Annotation.book_id == book_id)
+    if has_request_context():
+        from ...services.device_registry import find_koreader_device
+        raw_id = request.headers.get("X-CWNG-Device-ID")
+        device = (find_koreader_device(user_id=user_id, device_id=raw_id,
+                                      session=session) if raw_id else None)
+        if device is not None:
+            legacy_sources = ("koreader", "textquote") if device.kind == "koreader" else ()
+            query = query.filter(or_(
+                ub.Annotation.origin_device_id == device.id,
+                and_(ub.Annotation.origin_device_id.is_(None),
+                     ub.Annotation.source.in_(legacy_sources)),
+            ))
+    rows = query.order_by(ub.Annotation.id.asc()).all()
     annotations = [to_portable(r) for r in rows]
     if book is not None and book_format:
         _add_device_xpointers(rows, annotations, book, book_format)
