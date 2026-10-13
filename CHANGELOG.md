@@ -16,16 +16,6 @@ is for things you can see or feel when running the app.
 
 ## [Unreleased]
 
-## [v4.1.48] - 2026-10-12
-
-### Added
-
-- **Choose the books each KOReader device keeps.** The Devices page can use the account setting, all visible books, My Library, or selected shelves for each KOReader. Losing one selected shelf keeps the others; losing every selected shelf falls back to the account setting. Kobo sync keeps its current account scope.
-
-### Fixed
-
-- **Old copies of another device’s highlights are cleaned up on KOReader.** A successful annotation sync removes only imported highlights whose server origin proves they belong to another device. Local highlights and server reading data are kept.
-
 ## [v4.1.47] - 2026-10-09
 
 ### Changed
