@@ -72,9 +72,16 @@ The device is the one named by `X-CWNG-Device-ID` / `X-CWNG-Device-Name`, as `ko
   short list (#468).
 - **Fallback:** if every chosen shelf is deleted, or now belongs to another user, the device serves the account scope
   with 200. It is never empty and never an error.
+  - **Partial loss (CWNG decision):** while at least one chosen shelf (or magic shelf) remains, the device keeps the
+    remaining ones: its books and `scope_shelves` come from them alone, and the row reports `fallback: null` with
+    `effective_mode == "shelves"` (no notice). It falls back only when no chosen shelf is left.
   - The row reports `fallback.reason` as `shelf_deleted` or `shelf_unavailable`, with `effective_mode == account_mode`.
   - Deletion goes through the real `POST /api/v1/shelves/<id>/delete`; the ownership change is a direct `user_id`
     update.
+- **Magic shelves with the global `config_kobo_sync_magic_shelves` off (CWNG decision):** a device that picks shelves
+  gets exactly what the account scope gives today in the same case: the magic shelf contributes no books, reliably
+  (#359), so no 503. The test compares the device's books with an unset device whose account has the same shelves
+  marked for e-readers (main: To Read only; with only the magic shelf, nothing).
 - A scope change writes no rows in `device_reading_position`, `book_read_link`, `annotations` or `kobo_reading_state`.
 
 ## 4. Kobo (unchanged in PR A)
@@ -111,7 +118,11 @@ carries `cwng_id` and that id is in `foreign_annotation_ids`.
 
 ## 7. UI (Devices page, `/app/account/devices`)
 
-- Each row whose `book_scope` is present has a group whose accessible name includes "Books on this device". It holds:
+- **Only KOReader rows get the control (CWNG decision).** A Kobo row shows no "Books on this device" group, no scope
+  radios, no fallback notice and no "applies later" note in PR A, even when the API sends it a `book_scope` (the API
+  may still store and return a Kobo scope, as section 1 says; Kobo sync ignores it until PR B). The page decides by
+  `kind`, not by the presence of `book_scope`.
+- Each KOReader row whose `book_scope` is present has a group whose accessible name includes "Books on this device". It holds:
   - radios "Same as my account setting", "Everything in my library", "Only these shelves", and a My Library radio
     only when `choices.my_library` is true;
   - shelf checkboxes named by the shelf name;
@@ -123,10 +134,9 @@ carries `cwng_id` and that id is in `foreign_annotation_ids`.
 
 ## Ambiguities and how the tests resolve them
 
-- **Partial shelf loss** (one of two chosen shelves deleted) isn't tested; the implementer chooses and documents it.
-- **Magic shelf with the global `config_kobo_sync_magic_shelves` off:** not tested.
-- **A Kobo row's control:** the API stores and returns a Kobo scope, as the spec gives Kobo the control. Kobo sync
-  ignores it until PR B, and nothing on this branch tests a scoped Kobo's sync. Whether to hide or disable the Kobo
-  control until PR B is the implementer's or reviewer's call.
+- **Partial shelf loss:** decided by CWNG; see section 3 (keep the remaining shelf, no notice).
+- **Magic shelf with the global setting off:** decided by CWNG; see section 3 (same as the account scope).
+- **A Kobo row's control:** decided by CWNG; see section 7 (no control on Kobo rows in PR A). The API still stores and
+  returns a Kobo scope; nothing on this branch tests a scoped Kobo's sync.
 - **Cursor walks across a scope change** finish on the old revision (consistent with today's `(user, revision)`
   cursor cache).

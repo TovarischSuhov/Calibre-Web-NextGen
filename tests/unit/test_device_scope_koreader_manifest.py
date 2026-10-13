@@ -208,14 +208,16 @@ def test_the_resolver_answers_for_the_device_and_falls_back_to_the_account(world
 
 # -- magic shelves -------------------------------------------------------------
 
-def _magic(world, user, name, book_ids, *, reliable=True):
-    """A smart shelf (kobo_sync off) whose rule the library evaluates to
-    ``book_ids``; the evaluator is the one Kobo sync uses today."""
+def _magic(world, user, name, book_ids, *, reliable=True, kobo_sync=False,
+           global_setting=True):
+    """A smart shelf whose rule the library evaluates to ``book_ids``; the
+    evaluator is the one Kobo sync uses today. ``global_setting`` is the
+    admin's "Sync smart shelves to e-readers" switch."""
     from cps import config, magic_shelf
-    shelf = ub.MagicShelf(name=name, user_id=user.id, rules={}, kobo_sync=False)
+    shelf = ub.MagicShelf(name=name, user_id=user.id, rules={}, kobo_sync=kobo_sync)
     world.session.add(shelf)
     world.session.commit()
-    world.monkeypatch.setattr(config, "config_kobo_sync_magic_shelves", True,
+    world.monkeypatch.setattr(config, "config_kobo_sync_magic_shelves", global_setting,
                               raising=False)
     results = getattr(world, "_magic_results", {})
     results[shelf.id] = (set(book_ids), reliable)
@@ -256,6 +258,31 @@ def test_an_unreadable_smart_shelf_answers_unavailable_not_a_short_list(world):
     assert response.get_json()["error"] == "scope_unavailable"
     # The device left unset is not affected by a shelf it never chose.
     assert world.held(a, OTHER)[0] == TO_READ
+
+
+@pytest.mark.parametrize("with_shelf", [True, False], ids=["shelf-and-smart", "smart-only"])
+def test_a_smart_shelf_with_smart_shelf_sync_off_does_what_the_account_does(world, with_shelf):
+    """With the admin's smart-shelf switch off, the account scope today leaves
+    a smart shelf's books out (#359: reliable, nothing delivered). A device
+    that picks the same shelves gets exactly what an unset device on an
+    account with those shelves gets."""
+    a = _library(world)
+    smart = _magic(world, a, "Smart", {3, 4}, kobo_sync=True, global_setting=False)
+    if not with_shelf:
+        shelf = world.session.get(ub.Shelf, world.to_read.id)
+        shelf.kobo_sync = False
+        world.session.commit()
+    # The account's own answer on main's code: the unset device.
+    account = world.manifest(a, OTHER)
+    assert account.status_code == 200
+    account_books = {book["book_id"] for book in account.get_json()["books"]}
+    assert account_books == (TO_READ if with_shelf else set())
+
+    _set(world, "shelves", [world.to_read] if with_shelf else [], [smart])
+
+    scoped = world.manifest(a, KINDLE)
+    assert scoped.status_code == account.status_code
+    assert {book["book_id"] for book in scoped.get_json()["books"]} == account_books
 
 
 # -- a scope change reaches the device on its next sync ------------------------
@@ -360,6 +387,56 @@ def test_a_device_shelf_the_owner_lost_falls_back_to_the_account_scope(world):
     scope = _row(world, world.device)["book_scope"]
     assert scope["fallback"] == {"reason": "shelf_unavailable"}
     assert scope["effective_mode"] == scope["account_mode"]
+
+
+def _two_shelves(world):
+    """The device picks "Kindle" (2, 3) and "Extra" (4). The account scope is
+    "To Read" (1), so keeping a shelf and falling back are told apart."""
+    a = _library(world)
+    world.extra = world.shelf(a, "Extra", [4], uuid="shelf-extra")
+    _set(world, "shelves", [world.kindle, world.extra])
+    assert world.held(a, KINDLE)[0] == {2, 3, 4}
+    return a
+
+
+def _assert_kept_extra(world, a):
+    held, body = world.held(a, KINDLE)
+    assert held == {4}
+    assert body["scope"] == "shelves"
+    assert [s["id"] for s in body["scope_shelves"]] == ["shelf-extra"]
+    scope = _row(world, world.device)["book_scope"]
+    assert scope["fallback"] is None, "no notice while a chosen shelf remains"
+    assert scope["effective_mode"] == "shelves"
+
+
+def test_a_device_keeps_its_other_shelf_when_one_is_deleted(world):
+    a = _two_shelves(world)
+
+    deleted = world.web(a).post("/api/v1/shelves/%d/delete" % world.kindle.id)
+    assert deleted.status_code == 204
+
+    _assert_kept_extra(world, a)
+
+
+def test_a_device_keeps_its_other_shelf_when_the_owner_loses_one(world):
+    a = _two_shelves(world)
+
+    shelf = world.session.get(ub.Shelf, world.kindle.id)
+    shelf.user_id = world.b.id
+    world.session.commit()
+
+    _assert_kept_extra(world, a)
+
+
+def test_a_device_falls_back_only_when_its_last_shelf_goes(world):
+    a = _two_shelves(world)
+    assert world.web(a).post("/api/v1/shelves/%d/delete" % world.kindle.id).status_code == 204
+    _assert_kept_extra(world, a)
+
+    assert world.web(a).post("/api/v1/shelves/%d/delete" % world.extra.id).status_code == 204
+
+    _assert_account_scope(world, a)
+    assert _row(world, world.device)["book_scope"]["fallback"] == {"reason": "shelf_deleted"}
 
 
 def test_a_device_that_did_not_fall_back_reports_no_fallback(world):

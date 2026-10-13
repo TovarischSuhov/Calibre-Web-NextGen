@@ -3,11 +3,13 @@ import { assertNoHorizontalOverflow } from './utils';
 
 // Per-device book scope, PR A (spec state/kindle-kids/specs/2026-10-12-per-device-scope.md,
 // "UI: Devices page"; contract CONTRACT.md on the PR A branch). Each e-reader row
-// on the Devices page gets "Books on this device": the account setting (default),
-// everything in my library, My Library (when on), or only chosen shelves. The
-// list and the PATCH are stubbed so the spec pins the page's contract, not server
-// state. A row without `book_scope` (an older server, the web reader) gets no
-// control.
+// KOReader row on the Devices page gets "Books on this device": the account
+// setting (default), everything in my library, My Library (when on), or only
+// chosen shelves. The list and the PATCH are stubbed so the spec pins the page's
+// contract, not server state. In PR A a Kobo row gets NO control and no "applies
+// later" note, even when the server sends it a `book_scope` (Kobo sync honours a
+// device scope only from PR B). A row without `book_scope` (an older server, the
+// web reader) gets no control either.
 
 const SHELVES = [{ id: 11, name: 'To Read' }, { id: 12, name: 'Kindle' }];
 const HELP = 'Choose which books this device keeps. Books you take off are removed from the device at its next sync; your place, highlights and notes stay saved.';
@@ -92,8 +94,9 @@ test('a device starts on the account setting and saves a shelf choice', async ({
   expect(sent[0].id).toBe('kindle-1');
   expect(sent[0].body.book_scope.mode).toBe('shelves');
   expect(sent[0].body.book_scope.shelf_ids).toEqual([12]);
-  // The other e-reader was not touched.
-  await expect(control(page, 'Kobo A').getByRole('radio', { name: 'Same as my account setting' })).toBeChecked();
+  // Only the Kindle was saved; the Kobo row has no control to touch.
+  expect(sent.every(item => item.id === 'kindle-1')).toBe(true);
+  await expect(control(page, 'Kobo A')).toHaveCount(0);
 
   // A reload shows what was saved.
   await page.reload();
@@ -141,7 +144,7 @@ test('My Library is offered when it is on', async ({ page }) => {
   await expect(control(page, 'Kindle A').getByRole('radio')).toHaveCount(4);
 });
 
-test('a device whose shelf went away says so', async ({ page }) => {
+test('a KOReader device whose shelf was deleted says so', async ({ page }) => {
   await stubDevices(page, {
     'kindle-1': unset({ mode: 'shelves', shelf_ids: [99], fallback: { reason: 'shelf_deleted' } }),
     'kobo-1': unset({ mode: 'shelves', shelf_ids: [98], fallback: { reason: 'shelf_unavailable' } }),
@@ -149,14 +152,50 @@ test('a device whose shelf went away says so', async ({ page }) => {
   await page.goto('/app/account/devices');
 
   await expect(row(page, 'Kindle A').getByText(DELETED, { exact: true })).toBeVisible();
-  await expect(row(page, 'Kobo A').getByText(UNAVAILABLE, { exact: true })).toBeVisible();
+  // A Kobo row shows no scope notice in PR A.
+  await expect(row(page, 'Kobo A').getByText(UNAVAILABLE, { exact: true })).toHaveCount(0);
+});
+
+test('a KOReader device whose shelf is no longer available says so', async ({ page }) => {
+  await stubDevices(page, {
+    'kindle-1': unset({ mode: 'shelves', shelf_ids: [98], fallback: { reason: 'shelf_unavailable' } }),
+    'kobo-1': unset(),
+  });
+  await page.goto('/app/account/devices');
+
+  await expect(row(page, 'Kindle A').getByText(UNAVAILABLE, { exact: true })).toBeVisible();
+});
+
+test('a device that kept one of its two shelves shows no fallback notice', async ({ page }) => {
+  await stubDevices(page, {
+    'kindle-1': unset({ mode: 'shelves', shelf_ids: [12], effective_mode: 'shelves', fallback: null }),
+    'kobo-1': unset(),
+  });
+  await page.goto('/app/account/devices');
+
+  const books = control(page, 'Kindle A');
+  await expect(books.getByRole('radio', { name: 'Only these shelves' })).toBeChecked();
+  await expect(books.getByRole('checkbox', { name: 'Kindle', exact: true })).toBeChecked();
+  await expect(page.getByText(DELETED, { exact: true })).toHaveCount(0);
+  await expect(page.getByText(UNAVAILABLE, { exact: true })).toHaveCount(0);
+});
+
+test('only KOReader rows get the control', async ({ page }) => {
+  await stubDevices(page, { 'kindle-1': unset(), 'kobo-1': unset() });
+  await page.goto('/app/account/devices');
+
+  await expect(control(page, 'Kindle A')).toBeVisible();
+  // Even with a book_scope in its row, a Kobo gets no control and no note in PR A.
+  await expect(control(page, 'Kobo A')).toHaveCount(0);
+  await expect(row(page, 'Kobo A').getByRole('radio')).toHaveCount(0);
+  await expect(row(page, 'Kobo A').getByText(/Books on this device|account setting|next sync/)).toHaveCount(0);
 });
 
 test('the web reader and a row from an older server get no control', async ({ page }) => {
-  await stubDevices(page, { 'kindle-1': undefined, 'kobo-1': unset() });
+  await stubDevices(page, { 'kindle-1': undefined, 'kobo-1': undefined });
   await page.goto('/app/account/devices');
 
-  await expect(control(page, 'Kobo A')).toBeVisible();
+  await expect(control(page, 'Kobo A')).toHaveCount(0);
   await expect(control(page, 'Kindle A')).toHaveCount(0);
   await expect(row(page, 'Web reader').getByRole('group', { name: /Books on this device/ })).toHaveCount(0);
   await assertNoHorizontalOverflow(page);
