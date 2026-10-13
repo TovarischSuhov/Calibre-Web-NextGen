@@ -52,8 +52,8 @@ def world(monkeypatch):
 
 
 def _held_by_both(w, *, a_read_at=None):
-    """A and B hold book 1 and every To Read book; A has read book 1 and its
-    annotations are on the server (uploaded after that reading)."""
+    """A and B hold book 1 and every To Read book; each has read book 1 and
+    uploaded its annotations after that reading, so no removal waits (G7)."""
     w.settle(w.a)
     w.settle(w.b)
     w.make_authoritative(BOOK)
@@ -69,6 +69,7 @@ def _held_by_both(w, *, a_read_at=None):
     # clock, so "reading newer than the last upload" (G7) is not the case.
     time.sleep(1.1)
     w.upload_annotation(w.a, BOOK, "a-uploaded")
+    w.upload_annotation(w.b, BOOK, "b-uploaded")
 
 
 def _remove_and_acknowledge(w):
@@ -176,7 +177,7 @@ def test_re_add_serves_the_devices_own_annotations_even_when_telemetry_says_deli
     served = w.annotation_ids(w.a, BOOK)
 
     assert A_OWN <= served
-    assert not served & {"b-1", "kindle-1", "legacy-web"}
+    assert not served & {"b-1", "b-uploaded", "kindle-1", "legacy-web"}
 
 
 # == G4 ======================================================================
@@ -256,7 +257,7 @@ def test_each_kobo_is_served_its_own_rows_and_never_the_other_kobos(world):
     _held_by_both(w)
 
     assert w.annotation_ids(w.a, BOOK) >= A_OWN
-    assert not w.annotation_ids(w.a, BOOK) & {"b-1", "kindle-1", "legacy-web"}
+    assert not w.annotation_ids(w.a, BOOK) & {"b-1", "b-uploaded", "kindle-1", "legacy-web"}
     assert w.annotation_ids(w.b, BOOK) == B_OWN
 
 
@@ -265,7 +266,7 @@ def test_after_a_download_only_the_downloading_kobos_rows_are_restored(world):
     _held_by_both(w)
     w.download(w.a, BOOK)
 
-    assert not w.annotation_ids(w.a, BOOK) & {"b-1", "kindle-1", "legacy-web"}
+    assert not w.annotation_ids(w.a, BOOK) & {"b-1", "b-uploaded", "kindle-1", "legacy-web"}
     assert w.annotation_ids(w.a, BOOK) >= A_OWN
     assert w.annotation_ids(w.b, BOOK) == B_OWN
 
