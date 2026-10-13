@@ -13,6 +13,7 @@ import { SpinnerCentered } from '../components/Spinner';
 import { DeviceInventory, type Device } from '../components/DeviceInventory';
 import { KoboPairing } from '../components/KoboPairing';
 import { DeviceBookScope } from '../components/DeviceBookScope';
+import { DeviceSleepScreen } from '../components/DeviceSleepScreen';
 import styles from './Devices.module.css';
 
 interface Counts { origin_count: number; assigned_count: number }
@@ -81,6 +82,13 @@ export function Devices() {
   const [editing, setEditing] = useState<string | null>(null);
   const [label, setLabel] = useState('');
   const [menu, setMenu] = useState<string | null>(null);
+  const [sleepDevice, setSleepDevice] = useState<Device | null>(null);
+  const sleepInvokerRef = useRef<HTMLButtonElement | null>(null);
+  const closeSleepScreen = useCallback(() => {
+    setSleepDevice(null);
+    // The disclosure item has unmounted; restore to its persistent trigger.
+    requestAnimationFrame(() => sleepInvokerRef.current?.focus());
+  }, []);
   const [expandedInventory, setExpandedInventory] = useState<string | null>(null);
   const [removing, setRemoving] = useState<{ device: Device; counts: Counts } | null>(null);
   const [undoDevice, setUndoDevice] = useState<Device | null>(null);
@@ -303,6 +311,12 @@ export function Devices() {
                       }} />
                     <div className={styles.menu}>
                       <p role="alert" className={styles.menuError}>{preflightError ? t('Could not load removal details. Try again.') : ''}</p>
+                      {device.type === 'koreader' && device.active && <button type="button" className={styles.sleepScreenAction}
+                        onClick={() => {
+                          sleepInvokerRef.current = menuInvokerRef.current;
+                          setSleepDevice({ ...device });
+                          setMenu(null);
+                        }}>{t('Sleep screen')}</button>}
                       <button type="button" disabled={preflightPending} onClick={() => void openRemove(device)}>{preflightPending ? t('Loading…') : t('Remove device')}</button>
                     </div>
                   </>}
@@ -416,6 +430,7 @@ export function Devices() {
       {removing && <RemoveDialog device={removing.device} name={displayName(removing.device)} counts={removing.counts}
         onCancel={cancelRemoval} pending={remove.isPending} error={remove.isError}
         onRemove={() => { if (!remove.isPending) remove.mutate(removing.device); }} />}
+      {sleepDevice && <DeviceSleepScreen key={sleepDevice.public_id} device={sleepDevice} onClose={closeSleepScreen} />}
     </div>
   );
 }
