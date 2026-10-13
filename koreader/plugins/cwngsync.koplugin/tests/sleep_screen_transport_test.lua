@@ -2,9 +2,29 @@
 -- than trusting Content-Length and no redirects carrying Basic credentials.
 package.path="../?.lua;"..package.path
 local requests, response, body, header, sent = {},200,'{"revision":"one"}',{},1
-local Json=require("dkjson")
-package.loaded["json"]={encode=Json.encode,decode=function(value)
-    local decoded,_,err=Json.decode(value); assert(not err,err); return decoded
+-- The HTTP boundary is isolated from KOReader's JSON library just as it is
+-- from LuaSocket below. Keep this test runnable in CI's bare Lua/LuaJIT;
+-- requiring a developer-machine dkjson installation would add a dependency
+-- the plugin itself never needs. The fixture has only scalar object members.
+package.loaded["json"]={encode=function(value)
+    local keys,fields={},{}
+    for key in pairs(value) do keys[#keys+1]=key end
+    table.sort(keys)
+    for _,key in ipairs(keys) do
+        local item=value[key]
+        if type(item)=="string" then
+            assert(not item:find('["\\%c]'),"fixture string needs JSON escaping")
+            item='"'..item..'"'
+        else
+            assert(type(item)=="boolean" or type(item)=="number","fixture value must be scalar")
+            item=tostring(item)
+        end
+        fields[#fields+1]='"'..key..'":'..item
+    end
+    return "{"..table.concat(fields,",").."}"
+end,decode=function(value)
+    assert(value=='{"revision":"one"}',"unexpected JSON response fixture")
+    return {revision="one"}
 end}
 package.loaded["ui/uimanager"]={}
 package.loaded["logger"]={warn=function() end}
@@ -30,8 +50,8 @@ local function last() return requests[#requests] end
 local ok,err=xpcall(function()
     assert(client:report_sleep_screen_device("reader","secret","Kindle","device-1",
         {platform="android",plugin_version="4.1.47",supported=false}))
-    local report=assert(Json.decode(last().payload,1,Json.null))
-    assert(report.screen_width==Json.null and report.screen_height==Json.null,"explicit unsupported null dimensions")
+    assert(last().payload=='{"platform":"android","plugin_version":"4.1.47","supported":false,"screen_width":null,"screen_height":null}',
+        "valid JSON contains both explicit unsupported null dimensions")
     assert(last().redirect==false and last().headers.Authorization=="Basic encoded:reader:secret")
     assert(last().headers["X-CWNG-Device-ID"]=="device-1")
     assert(last().url=="https://cwng.invalid/kosync/syncs/sleep-screen/device")
